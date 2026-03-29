@@ -54,6 +54,17 @@ novo_teste/
 │
 ├── runs/                         # Training logs and checkpoints (not versioned)
 │
+├── arduino/                      # Energy monitoring subsystem
+│   ├── assets/
+│   │   └── ina_diagram.jpg       # INA219 wiring diagram
+│   ├── grafana/                  # Grafana provisioning (dashboards + datasources)
+│   ├── ina219_without_ethernet/
+│   │   └── ina219_without_ethernet.ino  # Arduino sketch
+│   ├── prometheus/               # Prometheus config and alert rules
+│   ├── docker-compose.yaml
+│   ├── main.py                   # Serial → Prometheus /metrics bridge
+│   └── README.md
+│
 ├── base_model_fine_tunning.py    # YOLOv10 fine-tuning script
 ├── faster_rcnn_train.py          # Faster R-CNN fine-tuning script
 ├── retinanet_train.py            # RetinaNet fine-tuning script
@@ -122,6 +133,12 @@ python evaluate_models.py
 ```
 
 Generates `resultados_avaliacao.xlsx` with one sheet per dataset containing: Params (M), mAP50, mAP50-95, Precision, Recall, F1, Inference (ms), FPS, and FLOPs (G).
+
+## Energy Monitoring (Arduino)
+
+The `arduino/` folder contains an independent subsystem that measures the **power consumption of the Raspberry Pi** (or any DC load) using an **Arduino UNO** and an **INA219** current/power sensor. Metrics are scraped by Prometheus and displayed in Grafana.
+
+See [arduino/README.md](arduino/README.md) for full wiring instructions, setup steps, and PromQL queries.
 
 ## Training Hyperparameters
 

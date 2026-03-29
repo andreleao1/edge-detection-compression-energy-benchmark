@@ -1,0 +1,14 @@
+# Provisionamento automático de Dashboards
+apiVersion: 1
+
+providers:
+  - name: 'Arduino Energy Monitor'
+    orgId: 1
+    folder: 'Arduino'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true
