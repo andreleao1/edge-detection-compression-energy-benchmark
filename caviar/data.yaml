@@ -1,0 +1,7 @@
+# path: dataset  # opcional, se os caminhos forem relativos
+train: C:\workspace\mestrado\novo_teste\caviar\datasets\images\train
+val: C:\workspace\mestrado\novo_teste\caviar\datasets\images\val
+test: C:\workspace\mestrado\novo_teste\caviar\datasets\images\test
+
+nc: 1
+names: ['pessoa']

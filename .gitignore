@@ -1,0 +1,30 @@
+# Modelos PyTorch
+*.pt
+*.pth
+
+# Planilhas
+*.xlsx
+*.xls
+*.csv
+*.ods
+
+# Diretórios de treino e logs
+runs/
+
+# Ambiente virtual
+venv/
+.venv/
+env/
+
+# Editor
+.vscode/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Datasets
+datasets/
+data/

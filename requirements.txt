@@ -1,0 +1,17 @@
+# Deep learning — install PyTorch separately with the appropriate CUDA version:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Object detection
+ultralytics
+
+# Computer vision
+opencv-python
+
+# Data / metrics
+pandas
+openpyxl
+numpy
+torchmetrics
+
+# FLOPs estimation (optional)
+thop
