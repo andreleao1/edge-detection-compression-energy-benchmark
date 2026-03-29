@@ -1,0 +1,21 @@
+# Provisionamento automático do Data Source do Prometheus no Grafana
+# Coloque este arquivo em: grafana/provisioning/datasources/datasource.yml
+
+apiVersion: 1
+
+# Lista de data sources a serem configurados
+datasources:
+  # Data Source principal - Prometheus
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 5s
+      queryTimeout: 60s
+      manageAlerts: true
+      alertmanagerUid: alertmanager
+    version: 1

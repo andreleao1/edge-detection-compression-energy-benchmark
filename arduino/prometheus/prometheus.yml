@@ -1,0 +1,68 @@
+# Configuração Global do Prometheus
+global:
+  scrape_interval: 15s      # Coleta métricas a cada 15 segundos
+  evaluation_interval: 15s  # Avalia regras a cada 15 segundos
+  scrape_timeout: 10s       # Timeout para coleta
+  
+  # Labels externos (opcional)
+  external_labels:
+    monitor: 'arduino-energy-monitor'
+    environment: 'production'
+
+# Configuração de Alertas (opcional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+          # - 'alertmanager:9093'
+
+# Carrega regras de alertas
+rule_files:
+  - 'alerts.yml'
+
+# Configuração de Scrape (Coleta de Métricas)
+scrape_configs:
+  # Monitoramento do próprio Prometheus
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          instance: 'prometheus'
+
+  # Monitoramento do Arduino via Serial (Python Script)
+  - job_name: 'arduino_energia'
+    scrape_interval: 5s      # Coleta a cada 5 segundos
+    scrape_timeout: 5s
+    metrics_path: /metrics   # Caminho padrão do Prometheus
+    static_configs:
+      # Windows/Mac com Docker Desktop - USA ESTE:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          device: 'arduino_uno'
+          sensor: 'ina219'
+          connection: 'serial'
+          location: 'lab'
+          
+  # Adicione mais Arduinos aqui se necessário
+  # - job_name: 'arduino_energia_2'
+  #   scrape_interval: 5s
+  #   static_configs:
+  #     - targets: ['192.168.0.51:8080']
+  #       labels:
+  #         device: 'arduino_mega'
+  #         sensor: 'ina219'
+  #         location: 'sala'
+
+    # Monitoramento da Raspberry Pi (CPU, Memória, Temperatura)
+  - job_name: 'raspberry_pi'
+    scrape_interval: 5s
+    scrape_timeout: 5s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - '192.168.0.10:9100'
+        labels:
+          device: 'raspberry_pi_4'
+          role: 'edge-compute'
+          workload: 'computer-vision'
+          location: 'lab'

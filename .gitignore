@@ -18,6 +18,7 @@ env/
 
 # Editor
 .vscode/
+.idea/
 
 # Cache Python
 __pycache__/
