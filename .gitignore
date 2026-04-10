@@ -29,3 +29,9 @@ __pycache__/
 # Datasets
 datasets/
 data/
+
+# Evaluation script — local config (commit settings.example.yaml instead)
+rasp_evaluate_models/settings.yaml
+
+# Evaluation logs
+rasp_evaluate_models/evaluation.log

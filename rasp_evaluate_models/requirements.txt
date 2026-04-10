@@ -1,0 +1,16 @@
+# ── Inference ──────────────────────────────────────────────────────────────
+# PyTorch must be installed separately with the correct CUDA/CPU variant.
+# For Raspberry Pi (ARM, CPU-only):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+ultralytics>=8.0.0
+
+# ── Orchestration ──────────────────────────────────────────────────────────
+pyyaml>=6.0.1
+
+# ── Database ───────────────────────────────────────────────────────────────
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+yoyo-migrations>=8.2.0
+
+# ── HTTP (Prometheus API) ──────────────────────────────────────────────────
+requests>=2.31.0

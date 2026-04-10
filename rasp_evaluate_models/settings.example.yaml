@@ -1,0 +1,39 @@
+postgres:
+  host: localhost
+  port: 5432
+  database: benchmark_results
+  user: benchmark
+  password: benchmark
+
+prometheus:
+  host: localhost
+  port: 9090
+
+# Each entry must have a unique 'name' and the absolute 'path' to the model file.
+models:
+  - name: yolov10n
+    path: /path/to/models/yolov10n.pt
+  - name: yolov10s
+    path: /path/to/models/yolov10s.pt
+  - name: faster_rcnn
+    path: /path/to/models/faster_rcnn.pth
+  - name: retinanet
+    path: /path/to/models/retinanet.pth
+  - name: mobilenet
+    path: /path/to/models/mobilenet.pth
+
+# Each entry must have a unique 'name' and the absolute 'path' to the images folder.
+datasets:
+  - name: CAVIAR
+    path: /path/to/datasets/caviar/images
+  - name: OXFORD_TOWER
+    path: /path/to/datasets/oxford/images
+
+experiment:
+  # Seconds to wait after each run so Prometheus has time to scrape the metrics.
+  wait_after_run: 30
+  # Seconds to wait between consecutive tests (cooldown).
+  cooldown_between_tests: 15
+  imgsz: 640
+  conf: 0.3
+  device: cpu
