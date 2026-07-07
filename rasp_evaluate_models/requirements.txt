@@ -1,4 +1,10 @@
-# ── Inference ──────────────────────────────────────────────────────────────
+# ── Inference: ONNX models (quantize_models.py output) ──────────────────────
+# Used for any model path ending in .onnx — no torch/ultralytics needed for these.
+onnxruntime>=1.17.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+
+# ── Inference: .pt models (non-quantized YOLO baselines) ────────────────────
 # PyTorch must be installed separately with the correct CUDA/CPU variant.
 # For Raspberry Pi (ARM, CPU-only):
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu

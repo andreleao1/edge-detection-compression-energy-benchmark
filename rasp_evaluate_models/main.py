@@ -19,8 +19,9 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
+import numpy as np
 import yaml
-from ultralytics import YOLO
 
 from database import init_db, save_error, save_result
 from prometheus_client import PrometheusClient
@@ -85,32 +86,90 @@ def _validate_settings(cfg: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Inference
+# Inference — ONNX Runtime (modelos quantizados gerados por quantize_models.py)
 # ---------------------------------------------------------------------------
 
-def run_inference(
-    model_cfg: dict,
-    dataset_cfg: dict,
-    experiment_cfg: dict,
-) -> tuple[float, float]:
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
+
+
+def _get_onnx_input_spec(session) -> tuple[str, bool, int, bool]:
     """
-    Load the model, run inference over the dataset, and return
-    (start_time, end_time) as Unix timestamps.
-
-    Raises any exception produced by the model so the orchestrator can
-    catch it and record the failure.
+    Introspecta o unico input do grafo ONNX para descobrir como pre-processar
+    as imagens, sem precisar de configuracao extra por modelo:
+      - has_batch: 4 dims (ex. YOLO, [1,3,640,640]) vs 3 dims (torchvision, [3,H,W])
+      - imgsz/square: dims H/W fixas (int)  -> resize quadrado para esse tamanho
+                      dims H/W dinamicas    -> resize preservando aspecto (lado
+                                               maior = imgsz, padrao usado por
+                                               Faster R-CNN / RetinaNet)
     """
-    model_path = model_cfg["path"]
-    dataset_path = dataset_cfg["path"]
+    inp = session.get_inputs()[0]
+    shape = inp.shape
+    has_batch = len(shape) == 4
+    h_dim, w_dim = shape[-2], shape[-1]
 
-    logger.info("Loading model '%s' from: %s", model_cfg["name"], model_path)
-    model = YOLO(model_path)
+    if isinstance(h_dim, int) and isinstance(w_dim, int):
+        imgsz, square = h_dim, True
+    else:
+        imgsz, square = 800, False
 
+    return inp.name, has_batch, imgsz, square
+
+
+def _preprocess_image(img_bgr: np.ndarray, imgsz: int, square: bool) -> np.ndarray:
+    img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    h, w = img.shape[:2]
+
+    if square:
+        img = cv2.resize(img, (imgsz, imgsz))
+    else:
+        scale = imgsz / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)))
+
+    arr = img.astype(np.float32).transpose(2, 0, 1) / 255.0
+    return np.ascontiguousarray(arr)
+
+
+def run_onnx_inference(model_path: str, dataset_path: str) -> tuple[float, float]:
+    """Roda inferencia de um modelo .onnx (quantizado ou nao) sobre todas as
+    imagens de dataset_path, usando so onnxruntime — sem torch/ultralytics."""
+    import onnxruntime as ort
+
+    session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+    input_name, has_batch, imgsz, square = _get_onnx_input_spec(session)
     logger.info(
-        "Starting inference — dataset='%s' path=%s",
-        dataset_cfg["name"],
-        dataset_path,
+        "  ONNX Runtime — input='%s' imgsz=%d square=%s batched=%s",
+        input_name, imgsz, square, has_batch,
     )
+
+    image_paths = [
+        p for p in sorted(Path(dataset_path).iterdir())
+        if p.suffix.lower() in IMAGE_EXTENSIONS
+    ]
+    if not image_paths:
+        raise RuntimeError(f"No images found in dataset path: {dataset_path}")
+
+    start_time = time.time()
+    for img_path in image_paths:
+        img_bgr = cv2.imread(str(img_path))
+        arr = _preprocess_image(img_bgr, imgsz, square)
+        if has_batch:
+            arr = arr[None, ...]
+        session.run(None, {input_name: arr})
+    end_time = time.time()
+
+    return start_time, end_time
+
+
+# ---------------------------------------------------------------------------
+# Inference — Ultralytics (modelos .pt nao quantizados)
+# ---------------------------------------------------------------------------
+
+def run_yolo_inference(
+    model_path: str, dataset_path: str, experiment_cfg: dict
+) -> tuple[float, float]:
+    from ultralytics import YOLO
+
+    model = YOLO(model_path)
 
     start_time = time.time()
     model.predict(
@@ -122,6 +181,42 @@ def run_inference(
         verbose=False,
     )
     end_time = time.time()
+    return start_time, end_time
+
+
+# ---------------------------------------------------------------------------
+# Inference — dispatcher
+# ---------------------------------------------------------------------------
+
+def run_inference(
+    model_cfg: dict,
+    dataset_cfg: dict,
+    experiment_cfg: dict,
+) -> tuple[float, float]:
+    """
+    Load the model, run inference over the dataset, and return
+    (start_time, end_time) as Unix timestamps.
+
+    Modelos ".onnx" (gerados por quantize_models.py) rodam via ONNX Runtime;
+    os demais (".pt") continuam rodando via ultralytics.YOLO().
+
+    Raises any exception produced by the model so the orchestrator can
+    catch it and record the failure.
+    """
+    model_path = model_cfg["path"]
+    dataset_path = dataset_cfg["path"]
+
+    logger.info("Loading model '%s' from: %s", model_cfg["name"], model_path)
+    logger.info(
+        "Starting inference — dataset='%s' path=%s",
+        dataset_cfg["name"],
+        dataset_path,
+    )
+
+    if str(model_path).lower().endswith(".onnx"):
+        start_time, end_time = run_onnx_inference(model_path, dataset_path)
+    else:
+        start_time, end_time = run_yolo_inference(model_path, dataset_path, experiment_cfg)
 
     logger.info(
         "Inference complete — duration=%.2fs",

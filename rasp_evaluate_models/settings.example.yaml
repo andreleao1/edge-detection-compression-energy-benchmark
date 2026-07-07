@@ -10,17 +10,20 @@ prometheus:
   port: 9090
 
 # Each entry must have a unique 'name' and the absolute 'path' to the model file.
+# Paths ending in ".onnx" (output of quantize_models.py) run via ONNX Runtime —
+# no torch/ultralytics needed for those. Paths ending in ".pt" run via
+# ultralytics.YOLO() (non-quantized YOLO baselines).
 models:
   - name: yolov10n
     path: /path/to/models/yolov10n.pt
-  - name: yolov10s
-    path: /path/to/models/yolov10s.pt
-  - name: faster_rcnn
-    path: /path/to/models/faster_rcnn.pth
-  - name: retinanet
-    path: /path/to/models/retinanet.pth
-  - name: mobilenet
-    path: /path/to/models/mobilenet.pth
+  - name: yolov10n_quantized
+    path: /path/to/models/yolov10n_quantized.onnx
+  - name: faster_rcnn_quantized
+    path: /path/to/models/faster_rcnn_quantized.onnx
+  - name: retinanet_quantized
+    path: /path/to/models/retinanet_quantized.onnx
+  - name: mobilenet_quantized
+    path: /path/to/models/mobilenet_quantized.onnx
 
 # Each entry must have a unique 'name' and the absolute 'path' to the images folder.
 datasets:
