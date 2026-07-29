@@ -1,0 +1,54 @@
+postgres:
+  host: localhost
+  port: 5432
+  database: benchmark_results
+  user: benchmark
+  password: benchmark
+
+prometheus:
+  host: localhost
+  port: 9090
+
+# Each entry must have a unique 'name' and the absolute 'path' to the model file.
+# Paths ending in ".onnx" (output of quantize_models.py) run via ONNX Runtime —
+# no torch/ultralytics needed for those. Paths ending in ".pt" run via
+# ultralytics.YOLO() (non-quantized YOLO baselines).
+models:
+  - name: yolov10n
+    path: /path/to/models/yolov10n.pt
+  - name: yolov10n_quantized
+    path: /path/to/models/yolov10n_quantized.onnx
+  - name: faster_rcnn_quantized
+    path: /path/to/models/faster_rcnn_quantized.onnx
+  - name: retinanet_quantized
+    path: /path/to/models/retinanet_quantized.onnx
+  - name: mobilenet_quantized
+    path: /path/to/models/mobilenet_quantized.onnx
+
+# Each entry must have a unique 'name' and the absolute 'path' to the images folder.
+datasets:
+  - name: CAVIAR
+    path: /path/to/datasets/caviar/images
+  - name: OXFORD_TOWER
+    path: /path/to/datasets/oxford/images
+
+experiment:
+  # Seconds to wait after each run so Prometheus has time to scrape the metrics.
+  wait_after_run: 30
+  # Seconds to wait between consecutive tests (cooldown).
+  cooldown_between_tests: 15
+  imgsz: 640
+  conf: 0.3
+  device: cpu
+
+  # Thermal safety: checked via `vcgencmd measure_temp` before each test
+  # (not via Prometheus — a safety check shouldn't depend on the monitoring
+  # stack being up). All fields optional; shown values are the defaults.
+  thermal_safety:
+    enabled: true
+    soft_limit_c: 75      # if reached, wait (poll_interval_s) for it to cool
+                           # down before starting the next test
+    hard_limit_c: 83       # if reached (even after waiting), abort the whole
+                           # pipeline — cooling isn't keeping up with the load
+    poll_interval_s: 15    # how often to re-check while waiting to cool down
+    max_wait_s: 300        # give up waiting and abort after this long

@@ -1,0 +1,15 @@
+groups:
+  - name: exporters_down
+    rules:
+      - alert: ExporterDown
+        expr: up{job=~"raspberry_pi|arduino_energia"} == 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Exporter "{{ $labels.job }}" fora do ar'
+          description: >-
+            Target {{ $labels.instance }} (job={{ $labels.job }}) nao esta
+            respondendo ao scrape do Prometheus ha pelo menos 30s. Sessoes de
+            coleta em andamento (baseline ou workload) podem ter gaps —
+            confira com rasp_evaluate_models/baseline_report.py ao final.

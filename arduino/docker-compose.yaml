@@ -40,6 +40,26 @@ services:
     networks:
       - monitoring
 
+  database:
+    image: postgres:15-alpine
+    container_name: postgres_benchmark
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: benchmark_results
+      POSTGRES_USER: benchmark
+      POSTGRES_PASSWORD: benchmark
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchmark -d benchmark_results"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   monitoring:
     driver: bridge
@@ -48,4 +68,6 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  postgres_data:
     driver: local
