@@ -157,6 +157,31 @@ go run main.go   # exposes :9100/metrics
 | Mixed precision | Yes (AMP) | Yes (AMP) |
 | Early stopping patience | 30 | — |
 
+## Known Limitations
+
+**RetinaNet INT8 static quantization is unusable for inference.** `quantize_models.py`
+exports and quantizes RetinaNet successfully (valid `.onnx`, passes `onnx.checker`,
+correct size reduction), but the quantized graph segfaults the ONNX Runtime on
+**every** `session.run()` call — reproduced with real images, random noise,
+square and non-square input shapes, on both ARM (Raspberry Pi) and x86.
+
+Investigated and ruled out:
+- Excluding the classification/regression heads (GroupNorm) from quantization
+- Excluding the entire FPN, quantizing only the ResNet-50 backbone (identical
+  architecture to Faster R-CNN's backbone, which quantizes and runs fine)
+- `per_channel=False`
+- `QuantFormat.QOperator` instead of `QDQ`
+
+None of these avoid the crash — only a fully unquantized graph runs. This
+points to an interaction between ONNX Runtime's graph optimizer and
+RetinaNet's topology (FPN with extra P6/P7 blocks), not a specific layer or
+quantization setting. See the comment above `quantize_onnx_static()` in
+`quantize_models.py` for the full investigation notes.
+
+**Consequence**: `rasp_evaluate_models/settings.yaml` does not include
+`retinanet_quantized_*` or `retinanet_pruned_p80_quantized_*` entries.
+Faster R-CNN, SSDLite-MobileNet, and YOLOv10 quantize and run without issue.
+
 ## Requirements
 
 | Environment | Requirement |

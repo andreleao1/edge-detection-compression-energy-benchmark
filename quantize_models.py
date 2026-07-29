@@ -204,6 +204,24 @@ def export_yolo_onnx(model_path: Path, imgsz: int, onnx_path: Path):
 # Quantizacao estatica (ONNX Runtime)
 # ---------------------------------------------------------------------------
 
+# AVISO — RetinaNet (retinanet_resnet50_fpn): o .onnx quantizado exporta e
+# passa no onnx.checker normalmente, mas trava com segmentation fault do ONNX
+# Runtime em QUALQUER session.run() (imagem real, ruido aleatorio, forma
+# quadrada ou nao) — reproduzido tanto em ARM (Raspberry Pi) quanto x86.
+# Ja foi tentado: excluir as cabecas (classification_head/regression_head) da
+# quantizacao, excluir o FPN inteiro (deixando so o backbone ResNet50 puro
+# quantizado — identico ao do Faster R-CNN, que funciona), per_channel=False,
+# e formato QOperator em vez de QDQ. Todas as combinacoes travam da mesma
+# forma; so o grafo totalmente sem quantizacao (so quant_pre_process, sem
+# quantize_static) roda. Ou seja, nao e uma camada especifica nem uma opcao
+# de configuracao — parece ser uma interacao entre a otimizacao de grafo do
+# ONNX Runtime e a topologia do RetinaNet (FPN com blocos extra P6/P7) que
+# quebra assim que qualquer quantizacao estatica e aplicada.
+# Os modelos retinanet_quantized_* continuam sendo gerados por este script
+# (o arquivo .onnx e valido), mas NAO devem ser usados para inferencia real —
+# ver rasp_evaluate_models/settings.yaml, onde essas entradas foram removidas.
+
+
 def quantize_onnx_static(fp32_path: Path, quant_path: Path,
                           calibration_reader: CalibrationDataReader, per_channel: bool = True):
     quant_path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,6 +270,13 @@ def run_torchvision_quant_pipeline(model_type, model_path, dataset_dir, output_p
         onnx_fp32 = Path(td) / "model_fp32.onnx"
         logger.info("Exportando para ONNX...")
         export_torchvision_onnx(model, imgsz, square, onnx_fp32)
+
+        if model_type == "retinanet":
+            logger.warning(
+                "  RetinaNet: o .onnx quantizado gerado aqui trava o ONNX Runtime em "
+                "qualquer session.run() — ver comentario acima de quantize_onnx_static. "
+                "Nao usar para inferencia real."
+            )
 
         images_dir = Path(dataset_dir) / "datasets" / "images" / "train"
         calib_arrays = load_calibration_arrays(images_dir, imgsz, square, n_calib, add_batch_dim=False)

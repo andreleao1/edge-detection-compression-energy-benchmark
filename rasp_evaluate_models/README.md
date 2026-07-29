@@ -31,9 +31,15 @@ Monitoring stack (docker-compose in arduino/)
 | Metric | Source | Description |
 |---|---|---|
 | `energia_potencia` | `arduino/main.py` | Power draw in watts (INA219 sensor) |
+| `energia_corrente` | `arduino/main.py` | Current in amps (INA219 sensor) |
 | `rasp_cpu_usage_percent` | `rasp_monitor/main.go` | CPU usage per core + aggregate |
 | `rasp_memory_used_percent` | `rasp_monitor/main.go` | RAM usage percentage |
+| `rasp_memory_used_mb` | `rasp_monitor/main.go` | RAM usage in megabytes |
 | `rasp_cpu_temperature_celsius` | `rasp_monitor/main.go` | CPU temperature |
+
+Both exporters accept `--session-id`/`--period`/`--day`/`--mode` flags, attached
+as fixed labels to every metric they expose for the life of the process — see
+[Baseline / idle sessions](#baseline--idle-sessions) below.
 
 ### Database schema
 
@@ -52,6 +58,26 @@ Table `experiment_results`:
 | `data_execucao` | timestamptz | Run start time (UTC) |
 | `duracao_total` | float | Total inference duration (s) |
 | `erro` | text | Error message, `NULL` on success |
+
+Table `baseline_sessions` (one row per baseline/idle session, written by
+`baseline_report.py` — see [Baseline / idle sessions](#baseline--idle-sessions)):
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | serial | Primary key |
+| `session_id` | varchar | Unique per session — `UNIQUE`, re-running the aggregation overwrites the row |
+| `period` | varchar | `manha` / `tarde` / `noite`, read back from the exporters' labels |
+| `day` | varchar | Session date (`YYYY-MM-DD`) |
+| `mode` | varchar | `baseline` or `workload` |
+| `window_start` / `window_end` | timestamptz | Real session boundaries (first/last sample with that `session_id`) |
+| `analysis_start` / `analysis_end` | timestamptz | Same window minus the initial warm-up (`--warmup-minutes`) |
+| `avg_cpu_pct` / `max_cpu_pct` | float | CPU usage (%) |
+| `avg_mem_pct` | float | RAM usage (%) |
+| `avg_mem_mb` / `max_mem_mb` | float | RAM usage (MB) |
+| `avg_current_a` / `max_current_a` | float | INA219 current (A) |
+| `avg_power_w` / `max_power_w` | float | INA219 power (W) |
+| `data_quality_ok` | boolean | `false` if the `up` check found scrape gaps or a target down during the window |
+| `quality_warnings` | text | Human-readable detail when `data_quality_ok` is `false` |
 
 ## Requirements
 
@@ -151,6 +177,9 @@ The script logs to both stdout and `evaluation.log`.
 ### Execution flow per test
 
 ```
+0. Check CPU temperature (vcgencmd measure_temp) — wait to cool down if
+    above soft_limit_c; abort the whole pipeline if above hard_limit_c
+    (see "Thermal safety" below)
 1. Load model  →  run inference over every image in the dataset folder
                     (ONNX Runtime session.run() for ".onnx", YOLO.predict() for ".pt")
 2. Record start_time / end_time (Unix timestamp)
@@ -162,11 +191,110 @@ The script logs to both stdout and `evaluation.log`.
 6. Sleep cooldown_between_tests seconds  (thermal + resource cooldown)
 ```
 
+### Thermal safety
+
+Before each test, `main.py` reads the CPU temperature directly via
+`vcgencmd measure_temp` (not through Prometheus — a safety check shouldn't
+depend on the monitoring stack being up). Configured under
+`experiment.thermal_safety` in `settings.yaml`:
+
+- **`soft_limit_c`** (default 75°C): if reached, the pipeline waits
+  (re-checking every `poll_interval_s`) for the temperature to drop before
+  starting the next test.
+- **`hard_limit_c`** (default 83°C): if reached — even after waiting — the
+  entire pipeline aborts. Also aborts if the temperature hasn't dropped
+  below `soft_limit_c` within `max_wait_s`.
+- **`enabled: false`** disables the check entirely.
+
+If `vcgencmd` isn't available (e.g. running outside a Raspberry Pi), the
+check is skipped silently and never blocks the pipeline.
+
 ### PromQL strategy
 
 Each metric is queried as an instant query evaluated at `end_time` using a
 lookback window equal to `(end_time − start_time)` seconds. This scopes the
 aggregation exactly to the inference window without manual range-query math.
+
+## Baseline / idle sessions
+
+A baseline session measures the Raspberry Pi's resource/energy consumption at
+rest — no model inference running — as a reference point before comparing
+against workload runs. Neither exporter drives inference itself (that's
+entirely `main.py`'s job), so a baseline session is just: **start both
+exporters, tag them with matching session metadata, and don't run `main.py`
+during the window.**
+
+### 1. Start a session
+
+Start both exporters — `--period` and `--mode` are always required, but if
+you omit them each exporter shows a numbered menu instead of failing:
+
+```bash
+# On the Raspberry Pi
+cd rasp_monitor/
+go run main.go --port 9100
+
+# Wherever the Arduino/INA219 is plugged in (per docker-compose.yaml this is
+# typically the desktop running the monitoring stack, not the Pi itself)
+cd arduino/
+python main.py --port COM5
+```
+
+```
+Selecione o modo:
+  1 - baseline
+  2 - workload
+> 1
+Selecione o periodo:
+  1 - Manha
+  2 - Tarde
+  3 - Noite
+> 1
+```
+
+- `--period` (`manha`/`tarde`/`noite`) is always explicit, never inferred
+  from the clock (a session can cross a period boundary).
+- `--mode` is `baseline` (idle, this section) or `workload` (models running,
+  e.g. while `rasp_evaluate_models/main.py` is executing) — purely a label
+  for later filtering, it doesn't change exporter behavior.
+- `--day` defaults to today's date; `--session-id` defaults to
+  `"<day>-<period>"`. Since `day`/`period` are answered the same way on both
+  machines, the derived `session_id` matches automatically — no value needs
+  to be copied between the Pi and the desktop. Pass `--session-id` explicitly
+  only to disambiguate a rerun of the same day+period.
+- All four values are non-interactive flags too (`--period tarde
+  --mode baseline`), for scripted runs.
+- Since these are fixed labels for the process lifetime, **a new session
+  means restarting both exporters** — this also makes the process start/stop
+  double as the session's real time boundaries (used by `baseline_report.py`
+  below to find the window automatically).
+
+Let both exporters run for the desired window (e.g. 1h), then stop them
+(Ctrl+C).
+
+### 2. Aggregate the session
+
+```bash
+cd rasp_evaluate_models/
+python baseline_report.py --session-id 2026-07-20-tarde
+```
+
+This discovers the session's real start/end from the Prometheus data itself
+(first/last sample carrying that `session_id`), discards the first 5 minutes
+(thermal warm-up ramp — configurable via `--warmup-minutes`), then computes
+avg/max CPU%, avg memory% + avg/max memory MB, and avg/max current/power over
+the remaining window. It also checks the `up` metric for the `raspberry_pi`
+and `arduino_energia` jobs over the session window and flags scrape gaps or a
+target that went down — `up` doesn't carry the `session_id` label (it's a
+Prometheus-generated series per target, not something the exporters emit), so
+this check uses the session's discovered time window instead of a label
+match.
+
+Each run upserts one row into the `baseline_sessions` table (same Postgres as
+`experiment_results`, keyed by `session_id` — rerunning the aggregation for
+the same session overwrites its row) with the aggregates plus a
+`data_quality_ok` flag and any warnings. Exit code is non-zero if the data
+quality check failed.
 
 ## Configuration reference (`settings.yaml`)
 
@@ -205,6 +333,7 @@ experiment:
 ```
 rasp_evaluate_models/
 ├── main.py                  # Orchestrator entry point
+├── baseline_report.py       # Aggregates a baseline/idle session into a CSV row
 ├── database.py              # SQLAlchemy ORM + yoyo migration runner
 ├── prometheus_client.py     # Prometheus HTTP API wrapper
 ├── settings.yaml            # Local config — git-ignored

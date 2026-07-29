@@ -19,3 +19,8 @@ thop
 # Quantizacao (quantize_models.py)
 onnx
 onnxruntime
+
+# Persistencia dos resultados de avaliacao (accuracy_db.py)
+sqlalchemy
+psycopg2-binary
+pyyaml

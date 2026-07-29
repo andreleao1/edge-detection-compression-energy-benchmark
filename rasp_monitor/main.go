@@ -16,6 +16,36 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// validPeriods are the only accepted values for --period — passed explicitly
+// at session start rather than inferred from the clock, since a session can
+// cross a period boundary and inference would be ambiguous.
+var validPeriods = map[string]bool{"manha": true, "tarde": true, "noite": true}
+
+// validModes are the only accepted values for --mode.
+var validModes = map[string]bool{"baseline": true, "workload": true}
+
+// promptChoice shows a numbered menu on stdin/stdout and returns the chosen
+// option's value. Used for --period/--mode when omitted on the command line,
+// to avoid typos in the two fields that must match the arduino/main.py
+// exporter running on a different machine for the same session.
+func promptChoice(title string, options []string) string {
+	fmt.Println(title)
+	for i, opt := range options {
+		fmt.Printf("  %d - %s\n", i+1, opt)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("> ")
+		line, _ := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		idx, err := strconv.Atoi(line)
+		if err == nil && idx >= 1 && idx <= len(options) {
+			return options[idx-1]
+		}
+		fmt.Printf("Opcao invalida: %q — digite o numero correspondente.\n", line)
+	}
+}
+
 // cpuStat holds raw values from /proc/stat for a single CPU line
 type cpuStat struct {
 	user    uint64
@@ -48,7 +78,12 @@ type raspCollector struct {
 	descTemp         *prometheus.Desc
 }
 
-func newRaspCollector() *raspCollector {
+// newRaspCollector builds the collector. sessionLabels (session_id, period,
+// day, mode) are attached as constLabels on every metric — they're fixed for
+// the whole process lifetime, so a new baseline/workload session means
+// restarting the exporter with new flag values rather than the labels
+// changing mid-stream.
+func newRaspCollector(sessionLabels prometheus.Labels) *raspCollector {
 	labels := []string{"cpu"}
 	return &raspCollector{
 		prevCPU: make(map[string]cpuStat),
@@ -56,27 +91,27 @@ func newRaspCollector() *raspCollector {
 		descCPUUsage: prometheus.NewDesc(
 			"rasp_cpu_usage_percent",
 			"CPU usage percentage. Label 'cpu': 'total' or core index (0, 1, ...)",
-			labels, nil,
+			labels, sessionLabels,
 		),
 		descMemUsedBytes: prometheus.NewDesc(
 			"rasp_memory_used_bytes",
 			"Memory used in bytes (MemTotal - MemAvailable)",
-			nil, nil,
+			nil, sessionLabels,
 		),
 		descMemUsedMB: prometheus.NewDesc(
 			"rasp_memory_used_mb",
 			"Memory used in megabytes (MemTotal - MemAvailable)",
-			nil, nil,
+			nil, sessionLabels,
 		),
 		descMemUsedPct: prometheus.NewDesc(
 			"rasp_memory_used_percent",
 			"Memory usage as a percentage of total",
-			nil, nil,
+			nil, sessionLabels,
 		),
 		descTemp: prometheus.NewDesc(
 			"rasp_cpu_temperature_celsius",
 			"CPU temperature in Celsius from thermal_zone0",
-			nil, nil,
+			nil, sessionLabels,
 		),
 	}
 }
@@ -224,9 +259,38 @@ func (r *raspCollector) collectTemperature(ch chan<- prometheus.Metric) {
 
 func main() {
 	port := flag.Int("port", 9100, "Port to expose /metrics on")
+	sessionID := flag.String("session-id", "", "Unique identifier for this collection session. Defaults to \"<day>-<period>\" so it matches automatically across machines running the same session — pass explicitly only to disambiguate a rerun of the same day+period.")
+	period := flag.String("period", "", "Session period: manha, tarde or noite. Passed explicitly (never inferred from the clock). If omitted, prompts interactively.")
+	day := flag.String("day", time.Now().Format("2006-01-02"), "Session date (YYYY-MM-DD). Defaults to today.")
+	mode := flag.String("mode", "", "Session mode: baseline (idle, no inference running) or workload (models running). If omitted, prompts interactively.")
 	flag.Parse()
 
-	collector := newRaspCollector()
+	periodVal := *period
+	if periodVal == "" {
+		periodVal = promptChoice("Selecione o periodo:", []string{"manha", "tarde", "noite"})
+	} else if !validPeriods[periodVal] {
+		log.Fatalf("--period must be one of manha, tarde, noite (got %q)", periodVal)
+	}
+
+	modeVal := *mode
+	if modeVal == "" {
+		modeVal = promptChoice("Selecione o modo:", []string{"baseline", "workload"})
+	} else if !validModes[modeVal] {
+		log.Fatalf("--mode must be one of baseline, workload (got %q)", modeVal)
+	}
+
+	if *sessionID == "" {
+		*sessionID = fmt.Sprintf("%s-%s", *day, periodVal)
+	}
+
+	sessionLabels := prometheus.Labels{
+		"session_id": *sessionID,
+		"period":     periodVal,
+		"day":        *day,
+		"mode":       modeVal,
+	}
+
+	collector := newRaspCollector(sessionLabels)
 
 	// Warm-up read so the first real scrape has a CPU delta
 	func() {
@@ -248,6 +312,10 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
+	log.Printf(
+		"session: session_id=%s period=%s day=%s mode=%s",
+		*sessionID, periodVal, *day, modeVal,
+	)
 	log.Printf("rasp_monitor listening on %s — exposing /metrics", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
