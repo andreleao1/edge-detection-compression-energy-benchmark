@@ -19,11 +19,13 @@ from prometheus_client import start_http_server, Gauge, Counter
 import argparse
 import threading
 import logging
+from pathlib import Path
+import yaml
 
 # ==================== CONFIGURAÇÕES ====================
 
-# Configurações da Porta Serial
-DEFAULT_SERIAL_PORT = 'COM5'  # Windows: COM3, COM4, etc. | Linux: /dev/ttyUSB0, /dev/ttyACM0
+# Configurações padrão, sobrescritas por settings.yaml
+DEFAULT_SERIAL_PORT = 'COM5'
 DEFAULT_BAUD_RATE = 9600
 DEFAULT_PROMETHEUS_PORT = 8080
 
@@ -39,6 +41,31 @@ DEFAULT_STUCK_THRESHOLD = 4
 VALID_PERIODS = {'manha', 'tarde', 'noite'}
 VALID_MODES = {'baseline', 'workload'}
 
+
+def load_settings():
+    """Carrega as configurações locais do arquivo settings.yaml ao lado do script."""
+    settings_path = Path(__file__).resolve().parent / 'settings.yaml'
+    try:
+        with settings_path.open(encoding='utf-8') as settings_file:
+            settings = yaml.safe_load(settings_file)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f'Arquivo de configuração não encontrado: {settings_path}') from exc
+
+    if not isinstance(settings, dict):
+        raise ValueError(f'O arquivo {settings_path} precisa conter um mapa YAML.')
+
+    resolved = {
+        'serial_port': settings.get('serial_port', DEFAULT_SERIAL_PORT),
+        'baud_rate': int(settings.get('baud_rate', DEFAULT_BAUD_RATE)),
+        'prometheus_port': int(settings.get('prometheus_port', DEFAULT_PROMETHEUS_PORT)),
+        'stuck_threshold': int(settings.get('stuck_threshold', DEFAULT_STUCK_THRESHOLD)),
+    }
+    if not isinstance(resolved['serial_port'], str) or not resolved['serial_port'].strip():
+        raise ValueError('serial_port em settings.yaml precisa ser um texto não vazio.')
+    if resolved['baud_rate'] <= 0 or resolved['prometheus_port'] <= 0 or resolved['stuck_threshold'] <= 0:
+        raise ValueError('baud_rate, prometheus_port e stuck_threshold precisam ser positivos.')
+    return resolved
+
 # ==================== MÉTRICAS PROMETHEUS ====================
 
 # Labels de sessao (session_id, period, day, mode) sao fixos para a vida
@@ -50,6 +77,11 @@ SESSION_LABELS = ['session_id', 'period', 'day', 'mode']
 energia_tensao = Gauge('energia_tensao', 'Tensao em volts', SESSION_LABELS)
 energia_corrente = Gauge('energia_corrente', 'Corrente em amperes', SESSION_LABELS)
 energia_potencia = Gauge('energia_potencia', 'Potencia em watts', SESSION_LABELS)
+energia_temperatura_ambiente = Gauge(
+    'energia_temperatura_ambiente_celsius',
+    'Temperatura ambiente em graus Celsius (DS18B20)',
+    SESSION_LABELS,
+)
 energia_status = Gauge('energia_status', 'Status da leitura (1=valido, 0=invalido)', SESSION_LABELS)
 leituras_total = Counter('energia_leituras_total', 'Total de leituras realizadas')
 erros_total = Counter('energia_erros_total', 'Total de erros de leitura')
@@ -107,12 +139,14 @@ class ArduinoSerialReader:
     def parse_csv_line(self, line):
         """
         Parse de linha CSV do Arduino
-        Formato: SENSOR,timestamp,tensao,corrente,potencia,status
+        Formatos aceitos:
+        SENSOR,timestamp,tensao,corrente,potencia,status
+        SENSOR,timestamp,tensao,corrente,potencia,status,temperatura_c
         """
         try:
             parts = line.strip().split(',')
             
-            if len(parts) != 6:
+            if len(parts) not in (6, 7):
                 return None
             
             if parts[0] != 'SENSOR':
@@ -125,6 +159,13 @@ class ArduinoSerialReader:
                 'power': float(parts[4]),
                 'valid': int(parts[5])
             }
+
+            if len(parts) == 7:
+                temperature_c = float(parts[6])
+                # -127 °C é o sentinela DEVICE_DISCONNECTED_C da biblioteca
+                # DallasTemperature, portanto não deve virar uma métrica real.
+                if temperature_c > -100:
+                    data['temperature_c'] = temperature_c
             
             return data
             
@@ -139,12 +180,22 @@ class ArduinoSerialReader:
             energia_corrente.labels(**self.session_labels).set(data['current'])
             energia_potencia.labels(**self.session_labels).set(data['power'])
             energia_status.labels(**self.session_labels).set(data['valid'])
+            if 'temperature_c' in data:
+                energia_temperatura_ambiente.labels(**self.session_labels).set(
+                    data['temperature_c']
+                )
             leituras_total.inc()
-            
+
+            temperature_info = (
+                f"T_amb:{data['temperature_c']:.2f}°C | "
+                if 'temperature_c' in data else ""
+            )
+
             logger.info(
                 f"📊 V:{data['voltage']:.3f}V | "
                 f"I:{data['current']:.3f}A | "
                 f"P:{data['power']:.3f}W | "
+                f"{temperature_info}"
                 f"Status:{'OK' if data['valid'] else 'INVÁLIDO'}"
             )
             
@@ -259,34 +310,40 @@ def _prompt_choice(title: str, choices: list) -> str:
 
 def main():
     """Função principal"""
-    
+
+    try:
+        settings = load_settings()
+    except (OSError, RuntimeError, ValueError, yaml.YAMLError) as e:
+        logger.error(f'❌ Erro ao carregar settings.yaml: {e}')
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         description='Serial to Prometheus Exporter - Lê dados do Arduino e expõe para Prometheus'
     )
     parser.add_argument(
         '-p', '--port',
-        default=DEFAULT_SERIAL_PORT,
-        help=f'Porta serial (padrão: {DEFAULT_SERIAL_PORT})'
+        default=settings['serial_port'],
+        help=f'Porta serial (padrão de settings.yaml: {settings["serial_port"]})'
     )
     parser.add_argument(
         '-b', '--baud',
         type=int,
-        default=DEFAULT_BAUD_RATE,
-        help=f'Baud rate (padrão: {DEFAULT_BAUD_RATE})'
+        default=settings['baud_rate'],
+        help=f'Baud rate (padrão de settings.yaml: {settings["baud_rate"]})'
     )
     parser.add_argument(
         '--prometheus-port',
         type=int,
-        default=DEFAULT_PROMETHEUS_PORT,
-        help=f'Porta do servidor Prometheus (padrão: {DEFAULT_PROMETHEUS_PORT})'
+        default=settings['prometheus_port'],
+        help=f'Porta do servidor Prometheus (padrão de settings.yaml: {settings["prometheus_port"]})'
     )
     parser.add_argument(
         '--stuck-threshold',
         type=int,
-        default=DEFAULT_STUCK_THRESHOLD,
+        default=settings['stuck_threshold'],
         help=(
             'Numero de leituras identicas seguidas para considerar o sensor '
-            f'travado e reiniciar o Arduino (padrão: {DEFAULT_STUCK_THRESHOLD})'
+            f'travado e reiniciar o Arduino (padrão de settings.yaml: {settings["stuck_threshold"]})'
         )
     )
     parser.add_argument(

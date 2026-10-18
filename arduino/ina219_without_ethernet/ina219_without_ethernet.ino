@@ -5,11 +5,13 @@
  * no formato que pode ser facilmente parseado por um script Python
  * 
  * Formato de saída:
- * SENSOR,timestamp,tensao,corrente,potencia,status
+ * SENSOR,timestamp,tensao,corrente,potencia,status,temperatura_c
  */
 
 #include <Wire.h>
 #include <Adafruit_INA219.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 // ==================== CONFIGURAÇÕES ====================
 
@@ -18,10 +20,13 @@ const unsigned long INTERVALO_LEITURA = 5000; // 5 segundos
 
 // Configurações do Sensor
 const float SHUNT_RESISTANCE_OHM = 0.1;
+const uint8_t DS18B20_PIN = 4;
 
 // ==================== OBJETOS GLOBAIS ====================
 
 Adafruit_INA219 ina219;
+OneWire oneWire(DS18B20_PIN);
+DallasTemperature ds18b20(&oneWire);
 
 // Estrutura para armazenar leituras do sensor
 struct SensorData {
@@ -30,6 +35,7 @@ struct SensorData {
   float power;        // Potência em Watts
   bool valid;         // Indica se a leitura é válida
   unsigned long timestamp; // Timestamp em milissegundos
+  float temperatureC; // Temperatura ambiente em graus Celsius
 };
 
 // ==================== FUNÇÕES DE INICIALIZAÇÃO ====================
@@ -96,6 +102,11 @@ void scanI2C() {
  */
 SensorData readSensorData() {
   SensorData data;
+
+  // A conversão padrão do DS18B20 pode levar até 750 ms. Faça-a antes de
+  // registrar o timestamp e ler o INA219 para manter os valores sincronizados.
+  ds18b20.requestTemperatures();
+  data.temperatureC = ds18b20.getTempCByIndex(0);
   data.timestamp = millis();
   
   // Lê valores do sensor
@@ -133,7 +144,7 @@ SensorData readSensorData() {
 
 /**
  * Envia dados do sensor no formato CSV via Serial
- * Formato: SENSOR,timestamp,tensao,corrente,potencia,status
+ * Formato: SENSOR,timestamp,tensao,corrente,potencia,status,temperatura_c
  * @param data Dados do sensor
  */
 void sendSerialData(const SensorData& data) {
@@ -146,7 +157,11 @@ void sendSerialData(const SensorData& data) {
   Serial.print(",");
   Serial.print(data.power, 3);
   Serial.print(",");
-  Serial.println(data.valid ? 1 : 0);
+  Serial.print(data.valid ? 1 : 0);
+  Serial.print(",");
+  // DallasTemperature retorna DEVICE_DISCONNECTED_C (-127) se não detectar
+  // nenhum sensor; mantenha o sentinela explícito para o parser identificar.
+  Serial.println(data.temperatureC, 2);
 }
 
 /**
@@ -164,6 +179,8 @@ void sendSerialDataJSON(const SensorData& data) {
   Serial.print(data.power, 3);
   Serial.print(",\"valid\":");
   Serial.print(data.valid ? 1 : 0);
+  Serial.print(",\"temperature_c\":");
+  Serial.print(data.temperatureC, 2);
   Serial.println("}");
 }
 
@@ -192,12 +209,15 @@ void setup() {
   
   // Inicializa sensor
   if (!initSensor()) {
-    Serial.println("# AVISO: Sistema continuará sem sensor");
+  Serial.println("# AVISO: Sistema continuará sem sensor");
   }
+
+  ds18b20.begin();
+  Serial.println("# DS18B20 inicializado no pino 4");
   
   Serial.println("# ");
   Serial.println("# === Sistema Pronto ===");
-  Serial.println("# Formato: SENSOR,timestamp,tensao,corrente,potencia,status");
+  Serial.println("# Formato: SENSOR,timestamp,tensao,corrente,potencia,status,temperatura_c");
   Serial.println("# ");
   
   delay(1000);
