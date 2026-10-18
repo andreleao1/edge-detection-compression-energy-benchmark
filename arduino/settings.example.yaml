@@ -1,0 +1,8 @@
+# Copy this file to settings.yaml and set the serial port for this computer.
+# Windows example: COM3
+# Linux example: /dev/ttyACM0 or /dev/ttyUSB0
+# macOS example: /dev/cu.usbmodem1201
+serial_port: "COM3"
+baud_rate: 9600
+prometheus_port: 8080
+stuck_threshold: 4
