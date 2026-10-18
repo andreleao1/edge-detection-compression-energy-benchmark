@@ -10,6 +10,8 @@
 
 # Diretórios de treino e logs
 runs/
+models_to_deploy/
+compressed_models/
 
 # Ambiente virtual
 venv/
@@ -19,6 +21,7 @@ env/
 # Editor
 .vscode/
 .idea/
+.DS_Store
 
 # Cache Python
 __pycache__/

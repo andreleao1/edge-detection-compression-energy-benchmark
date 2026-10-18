@@ -2,7 +2,9 @@
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 # Object detection
-ultralytics
+# >=8.4.95 necessario para o suporte nativo a knowledge distillation
+# (distill_model=/dis=) usado por prune_models.py no modo --use_kd para YOLO.
+ultralytics>=8.4.95
 
 # Computer vision
 opencv-python
@@ -19,6 +21,9 @@ thop
 # Quantizacao (quantize_models.py)
 onnx
 onnxruntime
+
+# Poda estruturada (prune_models.py --pruning_mode structured)
+torch-pruning>=1.3.0
 
 # Persistencia dos resultados de avaliacao (accuracy_db.py)
 sqlalchemy

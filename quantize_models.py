@@ -71,6 +71,7 @@ Dependencias extras:
 import argparse
 import logging
 import os
+import re
 import shutil
 import tempfile
 import traceback
@@ -177,7 +178,7 @@ def export_torchvision_onnx(model: torch.nn.Module, imgsz: int, square: bool, on
         )
 
 
-def export_yolo_onnx(model_path: Path, imgsz: int, onnx_path: Path):
+def export_yolo_onnx(model_path: Path, imgsz: int, onnx_path: Path, template_path: Path = None):
     # Este processo ja importou onnxruntime (para a etapa de quantizacao), entao suas
     # DLLs estao carregadas em memoria. O Ultralytics, ao exportar com simplify=True,
     # tenta reinstalar onnxslim/onnxruntime-gpu via pip — no Windows isso falha com
@@ -187,11 +188,22 @@ def export_yolo_onnx(model_path: Path, imgsz: int, onnx_path: Path):
     os.environ.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
 
     try:
+        import torch
         from ultralytics import YOLO
     except ImportError:
         raise RuntimeError("Ultralytics nao encontrada. Execute: pip install ultralytics")
 
-    yolo = YOLO(str(model_path))
+    if template_path is not None:
+        # model_path e' um state_dict puro (poda nao-estrutural — ver
+        # prune_models.run_yolo_pipeline), nao um checkpoint ultralytics
+        # completo; reconstroi via um template da mesma arquitetura antes de
+        # exportar (mesmo padrao usado por evaluate_models.py/_load_yolo_model).
+        yolo = YOLO(str(template_path))
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+        yolo.model.load_state_dict(state_dict)
+    else:
+        yolo = YOLO(str(model_path))
+
     exported = yolo.export(
         format="onnx", imgsz=imgsz, dynamic=False,
         simplify=True, opset=OPSET_VERSION, nms=False, verbose=False,
@@ -222,12 +234,38 @@ def export_yolo_onnx(model_path: Path, imgsz: int, onnx_path: Path):
 # ver rasp_evaluate_models/settings.yaml, onde essas entradas foram removidas.
 
 
+def _yolo_head_node_names(onnx_path: Path) -> list[str]:
+    """Nomes dos nos da cabeca de deteccao (v10Detect) de um ONNX exportado
+    pelo Ultralytics: todos os nos '/model.<N>/...' com N = maior indice de
+    camada do grafo (a cabeca e' sempre a ultima camada do YOLO)."""
+    import onnx
+    model = onnx.load(str(onnx_path), load_external_data=False)
+    idx_by_node = {}
+    for node in model.graph.node:
+        m = re.match(r"^/model\.(\d+)/", node.name)
+        if m:
+            idx_by_node[node.name] = int(m.group(1))
+    if not idx_by_node:
+        return []
+    head_idx = max(idx_by_node.values())
+    return [name for name, idx in idx_by_node.items() if idx == head_idx]
+
+
 def quantize_onnx_static(fp32_path: Path, quant_path: Path,
-                          calibration_reader: CalibrationDataReader, per_channel: bool = True):
+                          calibration_reader: CalibrationDataReader, per_channel: bool = True,
+                          exclude_yolo_head: bool = False):
+    """exclude_yolo_head: mantem a cabeca de deteccao do YOLO em float32.
+    Quantizar a cabeca (regressao de caixas em escala de pixels + scores/topk
+    do pos-processamento NMS-free do YOLOv10) com ativacoes UINT8 MinMax
+    zerava mAP/Precision/Recall; backbone+neck seguem em INT8."""
     quant_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as td:
         pre_path = Path(td) / "preprocessed.onnx"
         quant_pre_process(str(fp32_path), str(pre_path), skip_symbolic_shape=True)
+
+        nodes_to_exclude = _yolo_head_node_names(pre_path) if exclude_yolo_head else []
+        if exclude_yolo_head:
+            logger.info(f"  Cabeca YOLO mantida em float32 ({len(nodes_to_exclude)} nos excluidos)")
 
         logging.disable(logging.WARNING)   # silencia avisos internos do quantizador (nao-fatais)
         try:
@@ -240,6 +278,7 @@ def quantize_onnx_static(fp32_path: Path, quant_path: Path,
                 weight_type=QuantType.QInt8,
                 activation_type=QuantType.QUInt8,
                 calibrate_method=CalibrationMethod.MinMax,
+                nodes_to_exclude=nodes_to_exclude,
             )
         finally:
             logging.disable(logging.NOTSET)
@@ -287,7 +326,8 @@ def run_torchvision_quant_pipeline(model_type, model_path, dataset_dir, output_p
         _log_size_reduction(onnx_fp32, output_path)
 
 
-def run_yolo_quant_pipeline(model_path, dataset_dir, output_path, n_calib=100, per_channel=True):
+def run_yolo_quant_pipeline(model_path, dataset_dir, output_path, n_calib=100, per_channel=True,
+                             template_path=None):
     cfg = DEFAULTS["yolo"]
     imgsz = cfg["imgsz"]
     output_path = Path(output_path)
@@ -295,7 +335,8 @@ def run_yolo_quant_pipeline(model_path, dataset_dir, output_path, n_calib=100, p
     with tempfile.TemporaryDirectory() as td:
         onnx_fp32 = Path(td) / "model_fp32.onnx"
         logger.info(f"\nExportando YOLO para ONNX: {model_path}")
-        export_yolo_onnx(Path(model_path), imgsz, onnx_fp32)
+        export_yolo_onnx(Path(model_path), imgsz, onnx_fp32,
+                          template_path=Path(template_path) if template_path else None)
 
         images_dir = Path(dataset_dir) / "datasets" / "images" / "train"
         calib_arrays = load_calibration_arrays(images_dir, imgsz, square=True,
@@ -303,7 +344,7 @@ def run_yolo_quant_pipeline(model_path, dataset_dir, output_path, n_calib=100, p
         reader = ArrayCalibrationReader(calib_arrays, input_name="images")
 
         logger.info(f"Quantizando (INT8 estatico, per_channel={per_channel})...")
-        quantize_onnx_static(onnx_fp32, output_path, reader, per_channel)
+        quantize_onnx_static(onnx_fp32, output_path, reader, per_channel, exclude_yolo_head=True)
         _log_size_reduction(onnx_fp32, output_path)
 
 
