@@ -63,6 +63,7 @@ MODO: MODELO UNICO
 
 import argparse
 import logging
+import shutil
 import traceback
 from functools import partial
 from pathlib import Path
@@ -82,6 +83,10 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.retinanet import RetinaNetClassificationHead
 from torchvision.models.detection.ssdlite import SSDLiteClassificationHead
 from torchvision.models.detection._utils import retrieve_out_channels
+
+# Necessario tambem para desserializar checkpoints YOLO podados (contem instancias
+# picladas de C2fSplitFree) — por isso o import fica no topo, mesmo sem uso direto.
+from c2f_splitfree import convert_c2f_splitfree  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -381,22 +386,51 @@ def count_params(model):
 
 def _yolo_ignored_layers(model):
     """Camadas do YOLOv10 que a poda estrutural deve ignorar: a cabeca de
-    deteccao inteira (model.model[-1], v10Detect — canais de saida presos a
-    nc/anchors) e todo modulo de atencao (bloco PSA), cujo qkv/proj fazem
-    view/split de canais que o torch-pruning nao rastreia corretamente."""
+    deteccao inteira (model.model[-1], v10Detect — canais presos a nc/anchors
+    e pos-processamento topk) e todo bloco de atencao (PSA/C2PSA/PSABlock/
+    Attention), cujo split/view interno de canais o torch-pruning nao rastreia."""
     ignored = [model.model[-1]]
     for m in model.modules():
-        if m.__class__.__name__ == "Attention":
-            for attr in ("qkv", "proj", "pe"):
-                sub = getattr(m, attr, None)
-                if sub is not None:
-                    ignored.append(sub)
+        if m.__class__.__name__ in ("PSA", "C2PSA", "PSABlock", "Attention"):
+            ignored.append(m)
     return ignored
 
 
-def apply_structured_pruning_yolo(torch_model, ratio, imgsz=640, device="cpu"):
+def _yolo_forward_head_inputs(model, x):
+    """Tensores de ENTRADA da cabeca de deteccao (saidas do neck). Ponto certo
+    para checar a equivalencia da conversao split-free: cobre todos os C2f e
+    evita o topk do v10Detect (que reordena deteccoes quase empatadas)."""
+    captured = []
+
+    def _flat(o):
+        if isinstance(o, torch.Tensor):
+            yield o
+        elif isinstance(o, (list, tuple)):
+            for i in o:
+                yield from _flat(i)
+
+    h = model.model[-1].register_forward_pre_hook(
+        lambda mod, inputs: captured.extend(t.detach().float().clone() for t in _flat(inputs)))
+    try:
+        with torch.no_grad():
+            model(x)
+    finally:
+        h.remove()
+    return captured
+
+
+def apply_structured_pruning_yolo(torch_model, ratio, imgsz=640, device="cpu",
+                                  max_layer_ratio=0.8, round_to=None):
     """Poda estrutural (canais) de um yolo.model (nn.Module puro) via
-    torch-pruning. Retorna o proprio modulo, agora menor."""
+    torch-pruning. Retorna o proprio modulo, agora menor.
+
+    Passos (o que faltava para a poda de fato reduzir Params/FLOPs):
+      1. Converte C2f/C2fCIB -> C2fSplitFree (o chunk(2,1) do cv1 nao e
+         rastreado pelo DependencyGraph) e verifica equivalencia numerica.
+      2. Liga requires_grad em tudo durante o traco (o grafo e rastreado via
+         grad_fn; camadas congeladas ficariam invisiveis) e restaura depois.
+      3. Poda global L1 ignorando cabeca e blocos de atencao, com teto de
+         max_layer_ratio por camada (evita esvaziar camadas criticas)."""
     try:
         import torch_pruning as tp
     except ImportError:
@@ -404,9 +438,33 @@ def apply_structured_pruning_yolo(torch_model, ratio, imgsz=640, device="cpu"):
             "torch-pruning nao encontrada. Execute: pip install torch-pruning"
         )
 
-    torch_model.eval()
+    torch_model.float().eval().to(device)
     example_inputs = torch.randn(1, 3, imgsz, imgsz, device=device)
+
+    # TF32 (Ampere+) gera diferencas ~1e-3 entre a conv original e as duas
+    # convs divididas que nao sao erro da conversao — desligado so na checagem.
+    tf32_cudnn = torch.backends.cudnn.allow_tf32
+    tf32_matmul = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        ref = _yolo_forward_head_inputs(torch_model, example_inputs)
+        n_conv = convert_c2f_splitfree(torch_model)
+        new = _yolo_forward_head_inputs(torch_model, example_inputs)
+    finally:
+        torch.backends.cudnn.allow_tf32 = tf32_cudnn
+        torch.backends.cuda.matmul.allow_tf32 = tf32_matmul
+    if len(ref) != len(new) or any(a.shape != b.shape for a, b in zip(ref, new)):
+        raise RuntimeError("Conversao C2f split-free alterou o numero/shape das saidas do neck")
+    worst = max((a - b).abs().max().item() for a, b in zip(ref, new))
+    if worst >= 1e-3:
+        raise RuntimeError(f"Conversao C2f split-free NAO e equivalente (max diff {worst:.3e})")
+    logger.info(f"  {n_conv} blocos C2f/C2fCIB convertidos para split-free "
+                f"(equivalencia OK, max diff {worst:.2e})")
+
     ignored_layers = _yolo_ignored_layers(torch_model)
+    original_requires_grad = {n: p.requires_grad for n, p in torch_model.named_parameters()}
+    torch_model.requires_grad_(True)
 
     imp = tp.importance.MagnitudeImportance(p=1)
     pruner = tp.pruner.MagnitudePruner(
@@ -414,10 +472,20 @@ def apply_structured_pruning_yolo(torch_model, ratio, imgsz=640, device="cpu"):
         example_inputs,
         importance=imp,
         pruning_ratio=ratio,
-        ignored_layers=ignored_layers,
         global_pruning=True,
+        ignored_layers=ignored_layers,
+        round_to=round_to,
+        max_pruning_ratio=max_layer_ratio,
     )
-    pruner.step()
+    try:
+        pruner.step()
+    finally:
+        for n, p in torch_model.named_parameters():
+            if n in original_requires_grad:
+                p.requires_grad_(original_requires_grad[n])
+
+    with torch.no_grad():       # sanity: forward valido apos a poda
+        torch_model.eval()(example_inputs)
     torch_model.train()
     return torch_model
 
@@ -821,17 +889,6 @@ def run_yolo_pipeline(model_path, data_yaml, output_path, sparsity, ft_epochs,
                        device, prune_conv=True, prune_linear=True, lr=None, batch_size=None,
                        pruning_mode="unstructured", use_kd=False, teacher_path=None, kd_weight=0.1,
                        skip_head=False, optimizer="SGD", warmup_epochs=0):
-    if pruning_mode == "structured":
-        raise NotImplementedError(
-            "Poda estrutural nao e suportada para YOLO: os blocos C2f/C2fCIB/PSA do "
-            "YOLOv10 fazem chunk()/split interno de canais que o torch-pruning nao "
-            "consegue rastrear corretamente (produz IndexError ou poda 0% dos canais "
-            "silenciosamente, dependendo de requires_grad). A solucao oficial do "
-            "torch-pruning para isso (exemplo yolov8_pruning.py) reescreve o bloco C2f "
-            "trocando o split por duas convolucoes separadas — nao implementado aqui "
-            "por decisao explicita do usuario (custo/risco vs beneficio). Use "
-            "pruning_mode='unstructured' para YOLO."
-        )
     try:
         from ultralytics import YOLO
     except ImportError:
@@ -851,8 +908,7 @@ def run_yolo_pipeline(model_path, data_yaml, output_path, sparsity, ft_epochs,
     masks_cpu = None
     if pruning_mode == "structured":
         logger.info(f"Aplicando pruning ESTRUTURAL (ratio={sparsity * 100:.1f}%)...")
-        param_device = next(torch_model.parameters()).device
-        apply_structured_pruning_yolo(torch_model, sparsity, imgsz=cfg["imgsz"], device=param_device)
+        apply_structured_pruning_yolo(torch_model, sparsity, imgsz=cfg["imgsz"], device=device)
         _, nzm = count_params(torch_model)
         logger.info(f"  Params apos poda estrutural: {nzm:,}  ({100.0*(1-nzm/t0):.2f}% removidos)")
     else:
@@ -876,7 +932,7 @@ def run_yolo_pipeline(model_path, data_yaml, output_path, sparsity, ft_epochs,
     logger.info(f"Fine-tuning YOLO por {ft_epochs} epocas (lr={lr}"
                 f"{', com KD' if use_kd else ''})...")
     out       = Path(output_path)
-    runs_dir  = out.parent / "_ft_yolo_tmp"
+    runs_dir  = (out.parent / "_ft_yolo_tmp").resolve()
 
     train_kwargs = dict(
         data=str(data_yaml),
@@ -906,17 +962,29 @@ def run_yolo_pipeline(model_path, data_yaml, output_path, sparsity, ft_epochs,
         train_kwargs["distill_model"] = str(teacher_path)
         train_kwargs["dis"] = kd_weight
 
-    yolo.train(**train_kwargs)
-
-    out.parent.mkdir(parents=True, exist_ok=True)
     if pruning_mode == "structured":
-        # yolo.train() acima re-treina o proprio objeto `yolo` in-place;
-        # yolo.save() grava um checkpoint completo (arquitetura + pesos),
-        # carregavel depois via YOLO(path) sem precisar de um template —
-        # necessario porque a arquitetura (numero de canais) difere do
-        # modelo original.
-        yolo.save(str(out))
+        # NAO usar yolo.train(): ele reconstroi a arquitetura a partir do yaml e
+        # carrega os pesos nela, descartando silenciosamente os pesos podados
+        # por incompatibilidade de shape (voltando ao tamanho original).
+        # Atribuindo o nn.Module podado a trainer.model ANTES de train(), o
+        # BaseTrainer.setup_model() ve um modulo pronto e nao o reconstroi.
+        from ultralytics.models.yolo.detect import DetectionTrainer
+        train_kwargs["model"] = str(model_path)  # so para registro de args
+        trainer = DetectionTrainer(overrides=train_kwargs)
+        trainer.model = torch_model.float().train()
+        trainer.train()
+        best = Path(trainer.best)
+        if not best.exists():
+            best = Path(trainer.last)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # checkpoint completo (arquitetura + pesos), carregavel via YOLO(path)
+        # sem template — a arquitetura difere da original. Requer
+        # c2f_splitfree importavel ao carregar.
+        shutil.copy2(best, out)
+        yolo = YOLO(str(out))
     else:
+        yolo.train(**train_kwargs)
+        out.parent.mkdir(parents=True, exist_ok=True)
         apply_masks_inplace(yolo.model, masks_cpu)
         torch.save(yolo.model.state_dict(), str(out))
         log_layer_sparsity(yolo.model, "(modelo final salvo)")
