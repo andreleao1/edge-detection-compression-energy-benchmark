@@ -534,15 +534,6 @@ def run_pruning_stage(mode: str, datasets, archs, pcts, ft_epochs, device, devic
     for dataset in datasets:
         for arch in archs:
             is_yolo = _arch_kind(arch) == "yolo"
-            if mode == "structured" and is_yolo:
-                # Decisao do usuario: poda estrutural nao e suportada para YOLO
-                # (blocos C2f/C2fCIB/PSA quebram o rastreamento do torch-pruning
-                # — ver NotImplementedError em prune_models.run_yolo_pipeline).
-                # YOLO usa apenas a poda nao-estrutural, inclusive como resultado
-                # "oficial" da planilha (ver bloco mode == "unstructured" abaixo).
-                logger.info(f"\n[structured] {arch} — pulando (YOLO usa so' poda nao-estrutural)")
-                continue
-
             ensure_baseline(dataset, arch, device, device_int, sheet_writer)
             baseline = _baseline_path(dataset, arch)
             if not baseline.exists():
@@ -592,9 +583,7 @@ def run_pruning_stage(mode: str, datasets, archs, pcts, ft_epochs, device, devic
                 if row is None:
                     continue
 
-                if mode == "structured" or is_yolo:
-                    # Para YOLO, a poda nao-estrutural E' o resultado "oficial"
-                    # (nao ha' poda estrutural para essa arquitetura — ver acima).
+                if mode == "structured":
                     sheet_writer.write(dataset, arch, kind_official, pct, row)
                 else:
                     rebuild_comparison_workbook()
@@ -664,19 +653,8 @@ def run_quantize_stage(datasets, archs, pcts, n_calib, device, device_int,
                 ("structured",   "pruned_structured", "pruned_structured_quantized",
                  "pruning_quantizacao", "Pruning Estruturado ({pct}%) + Quantização"),
                 ("unstructured", "pruned",            "pruned_unstructured_quantized",
-                 "pruning_quantizacao" if is_yolo else None,
-                 "Pruning Estruturado ({pct}%) + Quantização" if is_yolo
-                 else "Pruning Não-Estruturado ({pct}%) + Quantização"),
+                 None, "Pruning Não-Estruturado ({pct}%) + Quantização"),
             ]:
-                if mode == "structured" and is_yolo:
-                    # YOLO nunca gera checkpoint "pruned_structured" (ver
-                    # run_pruning_stage) — guard explicito em vez de confiar so'
-                    # no "if not pruned.exists()" abaixo, que pegaria por engano
-                    # um arquivo orfao deixado por uma execucao anterior a essa
-                    # regra (ja aconteceu — ver limpeza manual de runs/train/
-                    # pruned_structured/).
-                    continue
-
                 for pct in pcts:
                     if _arch_kind(arch) == "yolo":
                         pruned = RUNS_DIR / "train" / dirname / str(pct) / dataset / f"{arch}_pruned.pt"
@@ -738,8 +716,8 @@ def run_kd_stage(datasets, archs, pcts, ft_epochs, n_calib, kd_weight_yolo, kd_w
             # compressed_models/comparacao); o rotulo humano (compressao) abaixo
             # reflete corretamente qual poda foi de fato usada em cada caso.
             is_yolo = _arch_kind(arch) == "yolo"
-            kd_pruning_mode = "unstructured" if is_yolo else "structured"
-            kd_label = "Pruning Não-Estruturado" if is_yolo else "Pruning Estruturado"
+            kd_pruning_mode = "structured"
+            kd_label = "Pruning Estruturado"
 
             for pct in pcts:
                 sparsity = pct / 100.0
@@ -774,16 +752,13 @@ def run_kd_stage(datasets, archs, pcts, ft_epochs, n_calib, kd_weight_yolo, kd_w
 
                 _copy_to_compressed(dataset, arch, f"pruned_structured_kd_p{pct}", out)
                 nome_modelo = _nome_modelo(arch, "pruned_structured_kd", pct)
-                # YOLO usa poda nao-estrutural por baixo (kd_pruning_mode) —
-                # salva state_dict puro, precisa de template pra recarregar
-                # (mesmo motivo de run_pruning_stage). Torchvision usa poda
-                # estrutural (nn.Module inteiro pickled) — load_torchvision_model
-                # ja detecta isso sozinho, sem template.
+                # Poda estrutural (YOLO e torchvision) salva checkpoint completo —
+                # nao precisa de template.
                 row = _evaluate_with_resume(
                     nome_modelo, dataset, arch=arch, checkpoint=out,
                     compressao=f"{kd_label} ({pct}%) + KD", pruning_rate=float(pct),
                     device=device, device_int=device_int,
-                    template_path=baseline if is_yolo else None,
+                    template_path=None,
                 )
                 if row is not None:
                     sheet_writer.write(dataset, arch, "pruning_kd", pct, row)
@@ -802,10 +777,8 @@ def run_kd_stage(datasets, archs, pcts, ft_epochs, n_calib, kd_weight_yolo, kd_w
                 logger.info(f"[kd+quantize] {arch} | {dataset} | {pct}%")
                 try:
                     if not out_q.exists() or overwrite:
-                        # YOLO + KD salva state_dict puro (poda nao-estrutural) —
-                        # precisa do baseline como template para exportar o ONNX.
                         _quantize_one(arch, dataset, out, out_q, n_calib,
-                                      template_path=baseline if is_yolo else None)
+                                      template_path=None)
                 except Exception:
                     logger.error(f"  ERRO quantizando KD {arch}/{dataset}/{pct}%", exc_info=True)
                     continue

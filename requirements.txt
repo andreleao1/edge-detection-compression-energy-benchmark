@@ -13,7 +13,7 @@ opencv-python
 pandas
 openpyxl
 numpy
-torchmetrics
+torchmetrics[detection]
 
 # FLOPs estimation (optional)
 thop
