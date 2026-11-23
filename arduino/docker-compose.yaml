@@ -16,6 +16,11 @@ services:
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--web.enable-lifecycle'
+    # No Linux (Docker Engine) host.docker.internal nao existe por padrao —
+    # sem isso o Prometheus nao alcanca o exportador do Arduino (arduino/main.py)
+    # rodando no host na porta 8080.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - monitoring
 
