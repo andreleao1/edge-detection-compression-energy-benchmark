@@ -39,3 +39,6 @@ arduino/settings.yaml
 
 # Evaluation logs
 rasp_evaluate_models/evaluation.log
+
+# Pesos copiados para experimentos (manifest.json e README.md sao versionados)
+experiments/**/*.onnx

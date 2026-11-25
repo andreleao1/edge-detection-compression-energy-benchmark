@@ -1,0 +1,230 @@
+{
+  "generated": "2026-11-25",
+  "mode": "pareto",
+  "criterion": "fronteira de Pareto: mAP50-95 x J/imagem, ambos na pior base (Caviar/Oxford)",
+  "models": [
+    {
+      "rank": 1,
+      "dir": "01_yolov10n_kd",
+      "name": "yolov10n__kd__yolov10n_kd",
+      "label": "YOLO10n — Knowledge Distillation",
+      "arch": "yolov10n",
+      "variant": "kd",
+      "source_variant": "kd",
+      "requantize_after_modifying": false,
+      "gain_per_J": null,
+      "files": {
+        "caviar": {
+          "source": "01_yolov10n_kd/caviar/source/yolov10n_kd.pt",
+          "source_origin": "models_to_deploy/caviar/yolov10n/kd/yolov10n_kd.pt"
+        },
+        "oxford": {
+          "source": "01_yolov10n_kd/oxford/source/yolov10n_kd.pt",
+          "source_origin": "models_to_deploy/oxford/yolov10n/kd/yolov10n_kd.pt"
+        }
+      },
+      "metrics": {
+        "caviar": {
+          "energy": 4.1379,
+          "latency": 1310.3275109170306,
+          "cpu": 81.42896022919166,
+          "mem_raw": 20.559627834462162,
+          "watt": 3.1578833333333334,
+          "map50": 0.9949,
+          "map5095": 0.8918,
+          "measured": "2026-11-22"
+        },
+        "oxford": {
+          "energy": 3.3803,
+          "latency": 1160.5212355212354,
+          "cpu": 77.09962066740268,
+          "mem_raw": 19.864539986205305,
+          "watt": 2.9127333333333336,
+          "map50": 0.8843,
+          "map5095": 0.4707,
+          "measured": "2026-11-23"
+        }
+      }
+    },
+    {
+      "rank": 2,
+      "dir": "02_yolov10m_quantized",
+      "name": "yolov10m__quantized__yolov10m_quantized",
+      "label": "YOLO10m — Quantização (8 bits)",
+      "arch": "yolov10m",
+      "variant": "quantized",
+      "source_variant": "baseline",
+      "requantize_after_modifying": true,
+      "gain_per_J": 0.00810616460743936,
+      "files": {
+        "caviar": {
+          "source": "02_yolov10m_quantized/caviar/source/yolov10m_finetuned.pt",
+          "source_origin": "models_to_deploy/caviar/yolov10m/baseline/yolov10m_finetuned.pt",
+          "reference": "02_yolov10m_quantized/caviar/reference/yolov10m_quantized.onnx",
+          "reference_origin": "models_to_deploy/caviar/yolov10m/quantized/yolov10m_quantized.onnx"
+        },
+        "oxford": {
+          "source": "02_yolov10m_quantized/oxford/source/yolov10m_finetuned.pt",
+          "source_origin": "models_to_deploy/oxford/yolov10m/baseline/yolov10m_finetuned.pt",
+          "reference": "02_yolov10m_quantized/oxford/reference/yolov10m_quantized.onnx",
+          "reference_origin": "models_to_deploy/oxford/yolov10m/quantized/yolov10m_quantized.onnx"
+        }
+      },
+      "metrics": {
+        "caviar": {
+          "energy": 11.0916,
+          "latency": 2986.417910447761,
+          "cpu": 99.51217464315701,
+          "mem_raw": 20.962141267066617,
+          "watt": 3.714,
+          "map50": 0.9949,
+          "map5095": 0.9317,
+          "measured": "2026-11-04"
+        },
+        "oxford": {
+          "energy": 11.7864,
+          "latency": 3062.4489795918366,
+          "cpu": 99.75016600265604,
+          "mem_raw": 21.37970175451232,
+          "watt": 3.8486833333333332,
+          "map50": 0.9263,
+          "map5095": 0.5327,
+          "measured": "2026-11-03"
+        }
+      }
+    },
+    {
+      "rank": 3,
+      "dir": "03_yolov10l_quantized",
+      "name": "yolov10l__quantized__yolov10l_quantized",
+      "label": "YOLO10l — Quantização (8 bits)",
+      "arch": "yolov10l",
+      "variant": "quantized",
+      "source_variant": "baseline",
+      "requantize_after_modifying": true,
+      "gain_per_J": 0.002696831223312616,
+      "files": {
+        "caviar": {
+          "source": "03_yolov10l_quantized/caviar/source/yolov10l_finetuned.pt",
+          "source_origin": "models_to_deploy/caviar/yolov10l/baseline/yolov10l_finetuned.pt",
+          "reference": "03_yolov10l_quantized/caviar/reference/yolov10l_quantized.onnx",
+          "reference_origin": "models_to_deploy/caviar/yolov10l/quantized/yolov10l_quantized.onnx"
+        },
+        "oxford": {
+          "source": "03_yolov10l_quantized/oxford/source/yolov10l_finetuned.pt",
+          "source_origin": "models_to_deploy/oxford/yolov10l/baseline/yolov10l_finetuned.pt",
+          "reference": "03_yolov10l_quantized/oxford/reference/yolov10l_quantized.onnx",
+          "reference_origin": "models_to_deploy/oxford/yolov10l/quantized/yolov10l_quantized.onnx"
+        }
+      },
+      "metrics": {
+        "caviar": {
+          "energy": 19.7333,
+          "latency": 5605.462962962963,
+          "cpu": 99.3283847325999,
+          "mem_raw": 26.53050198403448,
+          "watt": 3.520363636363636,
+          "map50": 0.995,
+          "map5095": 0.9375,
+          "measured": "2026-11-23"
+        },
+        "oxford": {
+          "energy": 19.7958,
+          "latency": 5662.169811320755,
+          "cpu": 99.79280850357082,
+          "mem_raw": 26.009428458842063,
+          "watt": 3.49615,
+          "map50": 0.9626,
+          "map5095": 0.5543,
+          "measured": "2026-11-23"
+        }
+      }
+    },
+    {
+      "rank": 4,
+      "dir": "04_yolov10m_kd",
+      "name": "yolov10m__kd__yolov10m_kd",
+      "label": "YOLO10m — Knowledge Distillation",
+      "arch": "yolov10m",
+      "variant": "kd",
+      "source_variant": "kd",
+      "requantize_after_modifying": false,
+      "gain_per_J": 0.015308911973756138,
+      "files": {
+        "caviar": {
+          "source": "04_yolov10m_kd/caviar/source/yolov10m_kd.pt",
+          "source_origin": "models_to_deploy/caviar/yolov10m/kd/yolov10m_kd.pt"
+        },
+        "oxford": {
+          "source": "04_yolov10m_kd/oxford/source/yolov10m_kd.pt",
+          "source_origin": "models_to_deploy/oxford/yolov10m/kd/yolov10m_kd.pt"
+        }
+      },
+      "metrics": {
+        "caviar": {
+          "energy": 22.9051,
+          "latency": 6837.386363636364,
+          "cpu": 85.90957661638274,
+          "mem_raw": 23.034088095673223,
+          "watt": 3.3499833333333333,
+          "map50": 0.9949,
+          "map5095": 0.938,
+          "measured": "2026-11-22"
+        },
+        "oxford": {
+          "energy": 17.6099,
+          "latency": 5604.814814814815,
+          "cpu": 85.1618574674602,
+          "mem_raw": 22.169519633046832,
+          "watt": 3.1419173553719006,
+          "map50": 0.9768,
+          "map5095": 0.6019,
+          "measured": "2026-11-23"
+        }
+      }
+    },
+    {
+      "rank": 5,
+      "dir": "05_yolov10l_kd",
+      "name": "yolov10l__kd__yolov10l_kd",
+      "label": "YOLO10l — Knowledge Distillation",
+      "arch": "yolov10l",
+      "variant": "kd",
+      "source_variant": "kd",
+      "requantize_after_modifying": false,
+      "gain_per_J": 0.0008544050528865932,
+      "files": {
+        "caviar": {
+          "source": "05_yolov10l_kd/caviar/source/yolov10l_kd.pt",
+          "source_origin": "models_to_deploy/caviar/yolov10l/kd/yolov10l_kd.pt"
+        },
+        "oxford": {
+          "source": "05_yolov10l_kd/oxford/source/yolov10l_kd.pt",
+          "source_origin": "models_to_deploy/oxford/yolov10l/kd/yolov10l_kd.pt"
+        }
+      },
+      "metrics": {
+        "caviar": {
+          "energy": 41.3975,
+          "latency": 12575.625,
+          "cpu": 86.6675224574888,
+          "mem_raw": 25.404862815287824,
+          "watt": 3.291884297520661,
+          "map50": 0.995,
+          "map5095": 0.9429,
+          "measured": "2026-11-22"
+        },
+        "oxford": {
+          "energy": 34.5376,
+          "latency": 10382.931034482759,
+          "cpu": 86.70452259088808,
+          "mem_raw": 24.52642931588115,
+          "watt": 3.3263833333333332,
+          "map50": 0.9829,
+          "map5095": 0.6177,
+          "measured": "2026-11-23"
+        }
+      }
+    }
+  ]
+}

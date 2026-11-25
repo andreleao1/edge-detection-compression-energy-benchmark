@@ -46,6 +46,7 @@ Uso:
     venv/bin/python select_top_models.py                     # custo/beneficio (Pareto)
     venv/bin/python select_top_models.py --quality map50
     venv/bin/python select_top_models.py --mode score        # ranking de recursos
+    venv/bin/python select_top_models.py --export experiments/top_models
     venv/bin/python select_top_models.py --top 5 --min-map50 0.85 --csv top5.csv
     venv/bin/python select_top_models.py --all-variants      # sem limite por arquitetura
     venv/bin/python select_top_models.py --weights energy=1  # so' energia
@@ -259,6 +260,8 @@ def run_pareto(args, models: dict) -> None:
         m["warnings"] = [f"RAM {m[d]['mem_raw']:.0f}% em {d} (medicao suspeita de {m[d]['measured']})"
                          for d in DATASETS if (m[d]["mem_raw"] or 0) > MEM_SUSPECT_PCT]
     print_sources(chosen)
+    if args.export:
+        export_models(chosen, args.export, "pareto")
 
     if args.csv:
         keys = ("energy", "latency", "cpu", "mem_raw", "watt", "map50", "map5095", "measured")
@@ -284,6 +287,109 @@ def source_paths(m: dict) -> dict:
     return {"variant": variant, **out}
 
 
+def _deployed_file(dataset: str, arch: str, variant: str) -> Path | None:
+    folder = DEPLOY_DIR / dataset / arch / variant
+    files = sorted(p for p in folder.glob("*") if p.suffix in (".pt", ".pth", ".onnx")) if folder.is_dir() else []
+    return files[0] if len(files) == 1 else None
+
+
+def export_models(chosen: list, out_dir: Path, mode: str) -> None:
+    """Copia os modelos escolhidos para out_dir, um diretorio por modelo:
+
+        <NN>_<arch>_<variante>/<dataset>/source/     checkpoint PyTorch de partida
+        <NN>_<arch>_<variante>/<dataset>/reference/  modelo exatamente medido na
+                                                     Raspberry (so' quando difere
+                                                     do source, ex. ONNX quantizado)
+        <NN>_<arch>_<variante>/variants/             onde vao as modificacoes
+
+    e grava manifest.json + README.md com as metricas de referencia."""
+    import json
+    import shutil
+    from datetime import date
+
+    def copy(src: Path, dst_dir: Path) -> str:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / src.name
+        if not (dst.exists() and dst.stat().st_size == src.stat().st_size):
+            shutil.copy2(src, dst)
+        return str(dst.relative_to(out_dir))
+
+    keys = ("energy", "latency", "cpu", "mem_raw", "watt", "map50", "map5095", "measured")
+    manifest = {"generated": date.today().isoformat(), "mode": mode,
+                "criterion": "fronteira de Pareto: mAP50-95 x J/imagem, ambos na pior base (Caviar/Oxford)"
+                if mode == "pareto" else "custo ponderado de recursos, pior caso entre as bases",
+                "models": []}
+    for i, m in enumerate(chosen, 1):
+        src_variant = editable_variant(m["variant"])
+        mdir = out_dir / f"{i:02d}_{m['arch']}_{m['variant']}"
+        (mdir / "variants").mkdir(parents=True, exist_ok=True)
+        entry = {"rank": i, "dir": mdir.name, "name": m["name"], "label": m["label"], "arch": m["arch"],
+                 "variant": m["variant"], "source_variant": src_variant,
+                 "requantize_after_modifying": src_variant != m["variant"],
+                 "gain_per_J": m.get("gain"), "files": {}, "metrics": {}}
+        for d in DATASETS:
+            src = _deployed_file(d, m["arch"], src_variant)
+            ref = _deployed_file(d, m["arch"], m["variant"])
+            if src is None or ref is None:
+                raise SystemExit(f"arquivo nao encontrado para {m['name']} em {d} "
+                                 f"(source={src_variant}, reference={m['variant']})")
+            files = {"source": copy(src, mdir / d / "source"),
+                     "source_origin": str(src.relative_to(ROOT))}
+            if ref != src:
+                files["reference"] = copy(ref, mdir / d / "reference")
+                files["reference_origin"] = str(ref.relative_to(ROOT))
+            entry["files"][d] = files
+            entry["metrics"][d] = {k: m[d][k] for k in keys}
+        manifest["models"].append(entry)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+
+    rows = "\n".join(
+        f"| {e['rank']} | `{e['dir']}` | {e['label']} | "
+        f"{e['metrics']['caviar']['energy']:.2f} / {e['metrics']['oxford']['energy']:.2f} | "
+        f"{e['metrics']['caviar']['map5095']:.3f} / {e['metrics']['oxford']['map5095']:.3f} | "
+        f"{e['metrics']['caviar']['map50']:.3f} / {e['metrics']['oxford']['map50']:.3f} | "
+        f"{'sim (origem: ' + e['source_variant'] + ')' if e['requantize_after_modifying'] else 'nao'} |"
+        for e in manifest["models"])
+    (out_dir / "README.md").write_text(f"""# Modelos de melhor custo/beneficio
+
+Gerado por `select_top_models.py --export` em {manifest['generated']}.
+Criterio: {manifest['criterion']}.
+
+| # | Diretorio | Modelo | J/imagem cav / oxf | mAP50-95 cav / oxf | mAP50 cav / oxf | Re-quantizar? |
+|---|---|---|---|---|---|---|
+{rows}
+
+Estes valores sao a **referencia** de cada modelo: toda modificacao deve ser
+comparada com a linha do proprio modelo (mesmo protocolo de medicao na
+Raspberry: `main_models.py --duration-minutes 10 --cooldown-minutes 3`).
+
+## Estrutura
+
+```
+<NN>_<arch>_<variante>/
+  caviar/source/      checkpoint PyTorch de partida para modificar (Caviar)
+  caviar/reference/   modelo exatamente medido na Raspberry, quando difere do
+                      source (ex.: ONNX quantizado) — so' para comparacao
+  oxford/...          idem para a Oxford
+  variants/           uma pasta por experimento, ex. variants/relu/
+```
+
+Os modelos sao treinados por base: cada modificacao precisa ser feita e
+medida separadamente para Caviar e Oxford.
+
+Nos modelos marcados com "Re-quantizar", a modificacao parte do checkpoint
+PyTorch anterior a quantizacao; depois de modificar e ajustar, gere o ONNX
+quantizado de novo (`quantize_models.py`) antes de medir na Raspberry.
+
+`manifest.json` tem os caminhos de origem e todas as metricas de referencia
+(energia, latencia, CPU, RAM, potencia, mAP, data da medicao).
+Os pesos (`.pt`, `.onnx`) nao vao para o git.
+""")
+    print(f"\nExportado para {out_dir}: {len(chosen)} modelo(s), manifest.json e README.md.")
+
+
 def run_score(args, models: dict) -> None:
     weights = parse_weights(args.weights)
     ranked, dropped = score(models, weights, args.min_map50)
@@ -304,6 +410,8 @@ def run_score(args, models: dict) -> None:
               f"{c['cpu']:3.0f}/{o['cpu']:<3.0f} {c['mem_raw']:3.0f}/{o['mem_raw']:<3.0f} "
               f"{c['map50']:.3f}/{o['map50']:.3f} {c['map5095']:.3f}/{o['map5095']:.3f}")
     print_sources(chosen)
+    if args.export:
+        export_models(chosen, args.export, "score")
 
     if args.csv:
         keys = ("energy", "latency", "cpu", "cpu_time", "mem_raw", "watt", "map50", "map5095", "measured")
@@ -333,6 +441,8 @@ def main():
                     help="--mode score: permite varias variantes da mesma arquitetura no top")
     ap.add_argument("--xlsx", type=Path, default=SHEET_XLSX)
     ap.add_argument("--csv", type=Path, default=None, help="grava o resultado completo em CSV")
+    ap.add_argument("--export", type=Path, default=None, metavar="DIR",
+                    help="copia os modelos escolhidos para DIR (ex. experiments/top_models), com manifest.json e README.md")
     ap.add_argument("--pg-host", default=DEFAULT_PG["host"])
     ap.add_argument("--pg-port", type=int, default=DEFAULT_PG["port"])
     args = ap.parse_args()
