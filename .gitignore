@@ -42,3 +42,11 @@ rasp_evaluate_models/evaluation.log
 
 # Pesos copiados para experimentos (manifest.json e README.md sao versionados)
 experiments/**/*.onnx
+
+# Videos (amostras das bases, ex. WalkByShop1cor.mpg / oxfordtower.mp4)
+*.mp4
+*.mpg
+*.mpeg
+*.avi
+*.mov
+*.mkv
