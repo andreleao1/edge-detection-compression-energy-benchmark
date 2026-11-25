@@ -50,3 +50,10 @@ experiments/**/*.onnx
 *.avi
 *.mov
 *.mkv
+
+# Lock do LibreOffice e logs locais
+.~lock.*
+*.log
+
+# Saidas de teste da inferencia guiada por movimento (regeradas pelo roi_inference.py)
+experiments/top_models/roi/

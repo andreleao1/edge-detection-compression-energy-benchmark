@@ -90,11 +90,11 @@ def editable_variant(variant: str) -> str:
     return re.sub(r"_quantized(_p\d+)$", r"\1", variant)
 
 
-def load_candidates(xlsx: Path, pg: dict) -> dict:
+def load_candidates(xlsx: Path, pg: dict, yolo_pq_variant: str | None = None) -> dict:
     wb = openpyxl.load_workbook(xlsx, data_only=True)
     db = fetch_db_results(pg)
     models: dict = {}
-    for row in iter_sheet_rows(wb, yolo_pq_variant=None):
+    for row in iter_sheet_rows(wb, yolo_pq_variant=yolo_pq_variant):
         if not row["db_name"]:
             continue
         res = db.get((row["db_name"], row["db_dataset"]))
