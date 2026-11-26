@@ -888,7 +888,8 @@ def run_torchvision_pipeline(model_type, model_path, dataset_dir,
 def run_yolo_pipeline(model_path, data_yaml, output_path, sparsity, ft_epochs,
                        device, prune_conv=True, prune_linear=True, lr=None, batch_size=None,
                        pruning_mode="unstructured", use_kd=False, teacher_path=None, kd_weight=0.1,
-                       skip_head=False, optimizer="SGD", warmup_epochs=0):
+                       skip_head=False, optimizer="SGD", warmup_epochs=0,
+                       nbs=64, cos_lr=False, patience=0):
     try:
         from ultralytics import YOLO
     except ImportError:
@@ -950,7 +951,12 @@ def run_yolo_pipeline(model_path, data_yaml, output_path, sparsity, ft_epochs,
         project=str(runs_dir),
         name="pruned_ft",
         exist_ok=True,
-        patience=0,
+        patience=patience,
+        # nbs = lote nominal: o ultralytics acumula gradientes ate nbs imagens
+        # antes de cada passo. Com bases pequenas (Oxford: 42 imagens de treino)
+        # isso da ~1 passo por epoca; nbs=batch desliga o acumulo.
+        nbs=nbs,
+        cos_lr=cos_lr,
         verbose=False,
     )
     if use_kd:
@@ -1193,6 +1199,11 @@ def parse_args():
                     help="[yolo] Otimizador do fine-tuning ('auto' ignora --lr e escolhe o proprio LR)")
     pr.add_argument("--yolo_warmup_epochs", type=float, default=0,
                     help="[yolo] Epocas de warmup do fine-tuning")
+    pr.add_argument("--yolo_nbs", type=int, default=64,
+                    help="[yolo] Lote nominal p/ acumulo de gradiente (use = --batch_size p/ desligar)")
+    pr.add_argument("--yolo_cos_lr", action="store_true", help="[yolo] LR com decaimento cosseno")
+    pr.add_argument("--yolo_patience", type=int, default=0,
+                    help="[yolo] Epocas sem melhora antes de parar (0 = desligado)")
 
     # Fine-tuning
     ft = p.add_argument_group("Fine-tuning")
@@ -1286,6 +1297,9 @@ def main():
             skip_head    = args.skip_head,
             optimizer    = args.yolo_optimizer,
             warmup_epochs= args.yolo_warmup_epochs,
+            nbs          = args.yolo_nbs,
+            cos_lr       = args.yolo_cos_lr,
+            patience     = args.yolo_patience,
         )
     else:
         if not args.dataset_dir:
